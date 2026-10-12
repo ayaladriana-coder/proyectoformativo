@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tablero Control Mensual - Centro</title>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  :root{
+    --azul:#1f4e78; --azul2:#2e6da4; --gris:#f4f6f9; --borde:#d9e1ec;
+    --verde:#2e8b57; --naranja:#e08a2b; --rojo:#c0504d; --texto:#243447;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:var(--gris); color:var(--texto);
+  }
+  header{
+    background:linear-gradient(135deg,var(--azul),var(--azul2));
+    color:#fff; padding:22px 28px;
+  }
+  header h1{margin:0;font-size:22px;letter-spacing:.3px}
+  header p{margin:6px 0 0;opacity:.85;font-size:13px}
+  .wrap{max-width:1280px;margin:0 auto;padding:22px 28px 60px}
+
+  /* --- drop zone --- */
+  #drop{
+    border:2px dashed var(--azul2); border-radius:14px; background:#fff;
+    padding:26px; text-align:center; cursor:pointer; transition:.15s;
+    margin-bottom:20px;
+  }
+  #drop:hover,#drop.hover{background:#eef4fb;border-color:var(--azul)}
+  #drop .big{font-size:16px;font-weight:600;color:var(--azul)}
+  #drop .small{font-size:13px;color:#66788c;margin-top:6px}
+  #file{display:none}
+  #status{font-size:13px;margin-top:10px;color:#66788c}
+  #status.ok{color:var(--verde);font-weight:600}
+  #status.err{color:var(--rojo);font-weight:600}
+
+  /* --- KPIs --- */
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:20px}
+  .kpi{background:#fff;border:1px solid var(--borde);border-radius:12px;padding:16px 18px}
+  .kpi .lbl{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:#7b8aa0}
+  .kpi .val{font-size:24px;font-weight:700;margin-top:6px;color:var(--azul)}
+  .kpi .sub{font-size:12px;color:#8a98ab;margin-top:2px}
+
+  /* --- charts --- */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:#fff;border:1px solid var(--borde);border-radius:12px;padding:8px 8px 4px}
+  .card h2{font-size:15px;margin:8px 10px 0;color:var(--azul)}
+  .card p{margin:2px 10px 0;font-size:12px;color:#8a98ab}
+  .chart{height:380px;width:100%}
+  footer{text-align:center;font-size:12px;color:#8a98ab;margin-top:26px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Tablero Control Mensual &mdash; Centro</h1>
+  <p>Septiembre 2026 &middot; arrastrá el CSV <b>control_mensual_sept.csv</b> para actualizar los gráficos.</p>
+</header>
+
+<div class="wrap">
+
+  <div id="drop">
+    <div class="big">Arrastrá y soltá el CSV acá</div>
+    <div class="small">o hacé clic para elegirlo &nbsp;&middot;&nbsp; columnas: fecha, dia_semana, seccion, item, cantidad, precio, monto</div>
+    <input id="file" type="file" accept=".csv,text/csv">
+  </div>
+  <div id="status">Sin datos cargados todavía.</div>
+
+  <div id="panel" class="hide">
+    <div class="kpis" id="kpis"></div>
+    <div class="grid">
+      <div class="card">
+        <h2>1) Mayores ventas por día (lunes a viernes)</h2>
+        <p>Días hábiles ordenados de mayor a menor por monto vendido.</p>
+        <div id="c1" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>2) Ventas por vaso</h2>
+        <p>Unidades y monto vendidos por tamaño de vaso.</p>
+        <div id="c2" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>3) Ventas en general</h2>
+        <p>Evolución del monto total vendido en todo el mes.</p>
+        <div id="c3" class="chart"></div>
+      </div>
+      <div class="card">
+        <h2>4) Mejor venta en cantidad de vasos</h2>
+        <p>Los 10 ítems más vendidos por cantidad de unidades.</p>
+        <div id="c4" class="chart"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>Hecho para abrirse directo en el navegador, sin Python. PapaParse + Plotly.</footer>
+</div>
+
+<script>
+const PALETA = ["#1f4e78","#2e6da4","#e08a2b","#2e8b57","#c0504d","#8064a2","#4bacc6","#f0a30a"];
+const DIAS_ORDEN = ["Lunes","Martes","Miércoles","Miercoles","Jueves","Viernes","Sábado","Sabado","Domingo"];
+const LUNES_VIERNES = new Set(["Lunes","Martes","Miércoles","Miercoles","Jueves","Viernes"]);
+
+const PLOT_CFG = {responsive:true, displayModeBar:false};
+
+let DATOS = [];
+
+const $ = s => document.querySelector(s);
+
+/* ------------------------- carga del archivo ------------------------- */
+const drop = $("#drop"), fileInput = $("#file"), statusEl = $("#status");
+
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => { if(e.target.files[0]) leerArchivo(e.target.files[0]); });
+
+["dragenter","dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hover"); }));
+["dragleave","drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hover"); }));
+
+drop.addEventListener("drop", e => {
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if(f) leerArchivo(f);
+});
+
+function leerArchivo(file){
+  if(!/\.csv$/i.test(file.name) && file.type !== "text/csv"){
+    setStatus("El archivo debe ser un .csv", "err"); return;
+  }
+  Papa.parse(file, {
+    header:true,
+    skipEmptyLines:true,
+    dynamicTyping:true,
+    complete: res => {
+      const filas = normalizar(res.data);
+      if(!filas.length){ setStatus("El CSV no tiene filas válidas.", "err"); return; }
+      DATOS = filas;
+      setStatus("Cargado: " + file.name + " — " + filas.length + " filas, " +
+                diasUnicos(filas) + " días.", "ok");
+      render(filas);
+    },
+    error: err => setStatus("Error al leer el CSV: " + err.message, "err")
+  });
+}
+
+/* Acepta encabezados en español o inglés y datos sin dynamicTyping previo. */
+const ALIAS = {
+  fecha:["fecha","date","dia","día"],
+  dia_semana:["dia_semana","diasemana","weekday","dayofweek","dia_de_la_semana"],
+  seccion:["seccion","sección","section","categoria","categoría"],
+  item:["item","producto","nombre","articulo","artículo"],
+  cantidad:["cantidad","qty","quantity","unidades","vasos"],
+  precio:["precio","price","precio_u","punit"],
+  monto:["monto","total","importe","amount","venta","ventas"]
+};
+function claveDe(k){
+  const n = String(k||"").toLowerCase().trim().replace(/\s+/g,"_").replace(/[()]/g,"");
+  for(const canon in ALIAS){ if(ALIAS[canon].includes(n)) return canon; }
+  return null;
+}
+function normalizar(data){
+  if(!data || !data.length) return [];
+  const mapa = {}, keys = Object.keys(data[0]);
+  keys.forEach(k => { const c = claveDe(k); if(c && !(c in mapa)) mapa[c] = k; });
+  const num = v => {
+    if(typeof v === "number") return v;
+    if(v==null) return 0;
+    const n = parseFloat(String(v).replace(/[^0-9.,-]/g,"").replace(/\.(?=\d{3}\b)/g,"").replace(",","."));
+    return isNaN(n) ? 0 : n;
+  };
+  return data.map(r => {
+    const ds = String(r[mapa.dia_semana] ?? "").trim();
+    let f = r[mapa.fecha];
+    if(f instanceof Date) f = f.toISOString().slice(0,10);
+    return {
+      fecha: String(f ?? "").trim(),
+      dia_semana: ds || diaDeFecha(f, ds),
+      seccion: String(r[mapa.seccion] ?? "").trim().toUpperCase(),
+      item: String(r[mapa.item] ?? "").trim(),
+      cantidad: num(r[mapa.cantidad]),
+      precio: num(r[mapa.precio]),
+      monto: num(r[mapa.monto])
+    };
+  }).filter(r => (r.item || r.monto || r.cantidad));
+}
+
+/* Parsea 'YYYY-MM-DD' sin desfase de zona horaria (no usar new Date(string)). */
+function partesFecha(f){
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(f).trim());
+  if(m) return { y:+m[1], mes:+m[2], d:+m[3] };
+  const d = new Date(f);
+  if(isNaN(d)) return null;
+  return { y:d.getFullYear(), mes:d.getMonth()+1, d:d.getDate(), date:d };
+}
+function diaDeFecha(f, fallback){
+  const p = partesFecha(f);
+  if(!p) return fallback;
+  const d = p.date || new Date(p.y, p.mes-1, p.d);
+  return DIAS_ORDEN[d.getDay()===0?6:d.getDay()-1];
+}
+function diasUnicos(filas){ return new Set(filas.map(r => r.fecha)).size; }
+function esHabil(d){ return LUNES_VIERNES.has(normalizaDia(d)); }
+function normalizaDia(d){
+  d = String(d||"").trim();
+  if(d==="Miercoles") return "Miércoles";
+  if(d==="Sabado") return "Sábado";
+  return d;
+}
+function fmtFecha(f){
+  const p = partesFecha(f);
+  if(!p) return String(f);
+  const d = p.date || new Date(p.y, p.mes-1, p.d);
+  return d.toLocaleDateString("es", {day:"2-digit", month:"short"});
+}
+const fmtMoneda = n => "$" + n.toLocaleString("es-AR", {minimumFractionDigits:0, maximumFractionDigits:0});
+const fmtNum = n => n.toLocaleString("es-AR");
+
+/* ------------------------------ render ------------------------------- */
+function render(filas){
+  $("#panel").classList.remove("hide");
+
+  const totalMonto = filas.reduce((a,r)=>a+r.monto,0);
+  const totalCant  = filas.reduce((a,r)=>a+r.cantidad,0);
+
+  const porDia = agrupar(filas, r => r.fecha, r => r.monto);
+  const diasArr = Object.keys(porDia).sort().map(f => ({fecha:f, dia:normalizaDia(filas.find(r=>r.fecha===f)?.dia_semana||""), monto:porDia[f]}));
+
+  /* KPIs */
+  const habiles = diasArr.filter(d => esHabil(d.dia));
+  const mejor = [...diasArr].sort((a,b)=>b.monto-a.monto)[0];
+  const mejorHabil = [...habiles].sort((a,b)=>b.monto-a.monto)[0];
+  $("#kpis").innerHTML = [
+    kpi("Venta total del mes", fmtMoneda(totalMonto), diasArr.length + " días"),
+    kpi("Vasos / unidades", fmtNum(totalCant), "vendidas"),
+    kpi("Mejor día", mejor ? fmtMoneda(mejor.monto) : "—", mejor ? fmtFecha(mejor.fecha) : ""),
+    kpi("Mejor día hábil", mejorHabil ? fmtMoneda(mejorHabil.monto) : "—", mejorHabil ? fmtFecha(mejorHabil.fecha) : "")
+  ].join("");
+
+  /* 1) Mayores ventas por día (lunes a viernes) */
+  const habOrden = habiles.sort((a,b)=>b.monto-a.monto);
+  Plotly.newPlot("c1", [{
+    type:"bar", orientation:"v",
+    x: habOrden.map(d => fmtFecha(d.fecha) + " (" + d.dia.slice(0,3) + ")"),
+    y: habOrden.map(d => d.monto),
+    marker:{color: habOrden.map((_,i)=>PALETA[i%PALETA.length])},
+    text: habOrden.map(d => fmtMoneda(d.monto)),
+    textposition:"outside", cliponaxis:false,
+    hovertemplate:"%{x}<br>Venta: $%{y:,.0f}<extra></extra>"
+  }], baseLayout("Monto vendido ($)"), PLOT_CFG);
+
+  /* 2) Ventas por vaso (solo tamaños de vaso: Grande / Mediano) */
+  const tam = {Grande:{monto:0,cant:0}, Mediano:{monto:0,cant:0}};
+  filas.forEach(r => {
+    const it = r.item.toLowerCase();
+    const k = it.includes("grande") ? "Grande" : it.includes("mediano") ? "Mediano" : null;
+    if(k){ tam[k].monto += r.monto; tam[k].cant += r.cantidad; }
+  });
+  const tamOrd = ["Grande","Mediano"];
+  Plotly.newPlot("c2", [
+    {
+      type:"bar", name:"Unidades", x:tamOrd, y:tamOrd.map(t=>tam[t].cant),
+      marker:{color:"#1f4e78"}, text:tamOrd.map(t=>fmtNum(tam[t].cant)), textposition:"outside",
+      hovertemplate:"%{x}<br>Unidades: %{y:,.0f}<extra></extra>"
+    },
+    {
+      type:"bar", name:"Monto $", x:tamOrd, y:tamOrd.map(t=>tam[t].monto), yaxis:"y2",
+      marker:{color:"#e08a2b"}, hovertemplate:"%{x}<br>Monto: $%{y:,.0f}<extra></extra>"
+    }
+  ], Object.assign(baseLayout("Unidades"), {
+    barmode:"group",
+    yaxis2:{title:"Monto ($)", overlaying:"y", side:"right", showgrid:false},
+    legend:{orientation:"h", y:-0.18}
+  }), PLOT_CFG);
+
+  /* 3) Ventas en general (todo el mes) */
+  const diasCrono = diasArr.sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  Plotly.newPlot("c3", [{
+    type:"bar",
+    x: diasCrono.map(d => fmtFecha(d.fecha)),
+    y: diasCrono.map(d => d.monto),
+    marker:{color:"#2e6da4"},
+    hovertemplate:"%{x}<br>Venta: $%{y:,.0f}<extra></extra>"
+  },{
+    type:"scatter", mode:"lines+markers", x:diasCrono.map(d=>fmtFecha(d.fecha)),
+    y:diasCrono.map(d=>d.monto), line:{color:"#e08a2b", width:2},
+    marker:{size:6, color:"#e08a2b"}, name:"Tendencia", hoverinfo:"skip"
+  }], baseLayout("Monto vendido ($)"), PLOT_CFG);
+
+  /* 4) Mejor venta en cantidad de vasos */
+  const porItem = agrupar(filas, r => r.item, r => r.cantidad);
+  const topItem = Object.entries(porItem)
+    .map(([item,cant]) => ({item, cant}))
+    .sort((a,b)=>b.cant-a.cant).slice(0,10).reverse();
+  Plotly.newPlot("c4", [{
+    type:"bar", orientation:"h",
+    x: topItem.map(d => d.cant),
+    y: topItem.map(d => d.item.length>28 ? d.item.slice(0,27)+"…" : d.item),
+    marker:{color:"#2e8b57"},
+    text: topItem.map(d => fmtNum(d.cant)), textposition:"outside", cliponaxis:false,
+    hovertemplate:"%{y}<br>Unidades: %{x:,.0f}<extra></extra>"
+  }], Object.assign(baseLayout("Unidades vendidas"), {
+    margin:{l:170, r:40, t:20, b:50}
+  }), PLOT_CFG);
+}
+
+function agrupar(filas, keyFn, valFn){
+  const out = {};
+  filas.forEach(r => {
+    const k = keyFn(r);
+    if(k===""||k==null) return;
+    out[k] = (out[k]||0) + (valFn(r)||0);
+  });
+  return out;
+}
+function kpi(lbl,val,sub){
+  return '<div class="kpi"><div class="lbl">'+lbl+'</div><div class="val">'+val+
+         '</div><div class="sub">'+(sub||"")+'</div></div>';
+}
+function baseLayout(y){
+  return {
+    margin:{l:60, r:20, t:20, b:50},
+    yaxis:{title:y, gridcolor:"#eef1f6", zeroline:false},
+    xaxis:{tickangle:-40},
+    font:{family:"Segoe UI, Roboto, Arial, sans-serif", size:11, color:"#243447"},
+    plot_bgcolor:"#fff", paper_bgcolor:"#fff"
+  };
+}
+function setStatus(txt, cls){ statusEl.textContent = txt; statusEl.className = cls||""; }
+
+window.addEventListener("resize", () => {
+  ["c1","c2","c3","c4"].forEach(id => {
+    const el = document.getElementById(id);
+    if(el && el.data) Plotly.Plots.resize(el);
+  });
+});
+</script>
+</body>
+</html>
